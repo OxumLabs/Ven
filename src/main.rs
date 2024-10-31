@@ -1,5 +1,5 @@
 use std::{
-    env::args,
+    env::{args, consts::OS},
     fs::{self, read_to_string, File},
     io::Write,
     process::{exit, Command},
@@ -51,7 +51,8 @@ fn main() {
                     }
                 };
 
-                let asm = mkasm::mkasm(pc, target);
+                let asm = mkasm::mkasm(pc, target.clone());
+                println!("asm for target '{}':\n{}",target,asm);
                 let asm_file_path = "a.asm";
 
                 match File::create(asm_file_path) {
@@ -62,11 +63,7 @@ fn main() {
                         }
 
                         let object_file_path = "a.o";
-                        if compile_target(
-                            args[2].as_str(),
-                            object_file_path,
-                            custom_linker.as_deref(),
-                        ) {
+                        if compile_target(args[2].as_str(), object_file_path, custom_linker.as_deref()) {
                             clean_up(retain_asm, asm_file_path, object_file_path);
                         } else {
                             exit(1);
@@ -87,83 +84,30 @@ fn main() {
 }
 
 fn compile_target(target: &str, object_file: &str, custom_linker: Option<&str>) -> bool {
-    match target {
-        "l64" | "l32" => compile_linux(target, object_file, custom_linker),
-        "w64" | "w32" => compile_windows(target, object_file, custom_linker),
-        "m64" | "m32" => compile_macos(target, object_file, custom_linker),
+    let nasm_cmd = match OS {
+        "linux" => "nasm",
+        "windows" => "./nasm.exe",
+        "macos" => "nasm",
         _ => {
-            eprintln!("Unsupported target: {}", target);
-            false
+            eprintln!("Unsupported Platform!");
+            exit(1);
         }
-    }
-}
+    };
 
-fn compile_linux(target: &str, object_file: &str, custom_linker: Option<&str>) -> bool {
     let nasmargs = match target {
         "l64" => vec!["-f", "elf64", "a.asm", "-o", object_file],
         "l32" => vec!["-f", "elf32", "a.asm", "-o", object_file],
-        _ => {
-            eprintln!("Unsupported Linux target!");
-            return false;
-        }
-    };
-
-    if !Command::new("nasm")
-        .args(&nasmargs)
-        .status()
-        .map_or(false, |s| s.success())
-    {
-        eprintln!("Assembly failed! Ensure NASM is installed.");
-        return false;
-    }
-
-    let linker = custom_linker.unwrap_or_else(|| {
-        if Command::new("ld.lld").arg("--version").output().is_ok() {
-            "ld.lld"
-        } else {
-            "ld"
-        }
-    });
-
-    let linker_args = match linker {
-        "ld.lld" => match target {
-            "l64" => vec!["-o", "a.out", object_file, "-no-pie"],
-            "l32" => vec!["-m", "elf_i386", "-o", "a.out", object_file],
-            _ => unreachable!(),
-        },
-        "ld" => match target {
-            "l64" => vec!["-o", "a.out", object_file, "-no-pie"],
-            "l32" => vec!["-m", "elf_i386", "-o", "a.out", object_file],
-            _ => unreachable!(),
-        },
-        _ => {
-            eprintln!("Unsupported linker: {}", linker);
-            return false;
-        }
-    };
-
-    if !Command::new(linker)
-        .args(&linker_args)
-        .status()
-        .map_or(false, |s| s.success())
-    {
-        eprintln!("Linking failed! Ensure the linker is installed.");
-        return false;
-    }
-    true
-}
-
-fn compile_windows(target: &str, object_file: &str, custom_linker: Option<&str>) -> bool {
-    let nasmargs = match target {
         "w64" => vec!["-f", "win64", "a.asm", "-o", object_file],
         "w32" => vec!["-f", "win32", "a.asm", "-o", object_file],
+        "m64" => vec!["-f", "macho64", "a.asm", "-o", object_file],
+        "m32" => vec!["-f", "macho32", "a.asm", "-o", object_file],
         _ => {
-            eprintln!("Unsupported Windows target!");
+            eprintln!("Unsupported target: {}", target);
             return false;
         }
     };
 
-    if !Command::new("./nasm.exe")
+    if !Command::new(nasm_cmd)
         .args(&nasmargs)
         .status()
         .map_or(false, |s| s.success())
@@ -173,12 +117,25 @@ fn compile_windows(target: &str, object_file: &str, custom_linker: Option<&str>)
     }
 
     let linker = custom_linker.unwrap_or_else(|| {
-        if Command::new("lld-link").arg("--version").output().is_ok() {
-            "lld-link"
-        } else if Command::new("tdm-gcc").arg("--version").output().is_ok() {
-            "tdm-gcc"
-        } else {
-            "link"
+        match target {
+            "w64" | "w32" => {
+                if Command::new("lld-link").arg("--version").output().is_ok() {
+                    "lld-link"
+                } else if Command::new("tdm-gcc").arg("--version").output().is_ok() {
+                    "tdm-gcc"
+                } else {
+                    "link"
+                }
+            },
+            "m64" | "m32" => "ld",
+            "l64" | "l32" => {
+                if Command::new("ld.lld").arg("--version").output().is_ok() {
+                    "ld.lld"
+                } else {
+                    "ld"
+                }
+            },
+            _ => "ld",
         }
     });
 
@@ -186,48 +143,13 @@ fn compile_windows(target: &str, object_file: &str, custom_linker: Option<&str>)
         "lld-link" => vec!["/OUT:a.exe", "/SUBSYSTEM:CONSOLE", object_file],
         "tdm-gcc" => vec!["/OUT:a.exe", "/SUBSYSTEM:CONSOLE", object_file],
         "link" => vec!["/OUT:a.exe", object_file],
-        _ => {
-            eprintln!("Unsupported linker: {}", linker);
-            return false;
-        }
-    };
-
-    if !Command::new(linker)
-        .args(&linker_args)
-        .status()
-        .map_or(false, |s| s.success())
-    {
-        eprintln!("Linking failed! Ensure the linker is installed.");
-        return false;
-    }
-    true
-}
-
-fn compile_macos(target: &str, object_file: &str, custom_linker: Option<&str>) -> bool {
-    let nasmargs = match target {
-        "m64" => vec!["-f", "macho64", "a.asm", "-o", object_file],
-        "m32" => vec!["-f", "macho32", "a.asm", "-o", object_file],
-        _ => {
-            eprintln!("Unsupported macOS target!");
-            return false;
-        }
-    };
-
-    if !Command::new("nasm")
-        .args(&nasmargs)
-        .status()
-        .map_or(false, |s| s.success())
-    {
-        eprintln!("Assembly failed! Ensure NASM is installed.");
-        return false;
-    }
-
-    let linker = custom_linker.unwrap_or("ld64.lld");
-
-    let linker_args = match linker {
+        "ld.lld" => match target {
+            "l64" => vec!["-o", "a.out", object_file, "-no-pie"],
+            "l32" => vec!["-m", "elf_i386", "-o", "a.out", object_file],
+            _ => unreachable!(),
+        },
         "ld" => match target {
-            "m64" => vec!["-o", "a.out", object_file],
-            "m32" => vec!["-o", "a.out", object_file],
+            "m64" | "m32" => vec!["-o", "a.out", object_file],
             _ => unreachable!(),
         },
         _ => {
@@ -244,6 +166,7 @@ fn compile_macos(target: &str, object_file: &str, custom_linker: Option<&str>) -
         eprintln!("Linking failed! Ensure the linker is installed.");
         return false;
     }
+
     true
 }
 

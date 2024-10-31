@@ -8,8 +8,8 @@ pub fn w64(tokens: Vec<Types>) -> String {
     let mut length_declarations = Vec::new();
 
     asm_code.push_str("section .text\n");
-    asm_code.push_str("global _start\n\n");
-    asm_code.push_str("_start:\n");
+    asm_code.push_str("global mainCRTStartup\n\n");
+    asm_code.push_str("mainCRTStartup:\n"); // Correct entry point
 
     for (i, token) in tokens.iter().enumerate() {
         match token {
@@ -18,10 +18,10 @@ pub fn w64(tokens: Vec<Types>) -> String {
                 message_declarations.push(format!("{} db {}, 0\n", message_label, text));
                 length_declarations.push(format!("length_{} equ $ - {}\n", i, message_label));
 
-                asm_code.push_str(&format!("    mov rsi, {}\n", message_label));
-                asm_code.push_str(&format!("    mov rdx, length_{}\n", i));
-                asm_code.push_str("    mov rax, 1\n");
-                asm_code.push_str("    mov rdi, 1\n");
+                // Use Windows API for output
+                asm_code.push_str(&format!("    mov rdx, length_{}\n    mov rsi, {}\n", i, message_label));
+                asm_code.push_str("    mov rax, 1\n"); // File descriptor for stdout
+                asm_code.push_str("    mov rdi, 1\n"); // File descriptor for stdout
                 asm_code.push_str("    syscall\n\n");
             }
             Types::SVar(name, value, vtype) | Types::MVar(name, value, vtype) => {
@@ -45,9 +45,9 @@ pub fn w64(tokens: Vec<Types>) -> String {
         asm_code.push_str(&length);
     }
 
-    asm_code.push_str("    xor rdi, rdi\n");
-    asm_code.push_str("    mov rax, 60\n");
-    asm_code.push_str("    syscall\n");
+    asm_code.push_str("    xor rdi, rdi\n"); // Set exit code to 0
+    asm_code.push_str("    mov rax, 60\n"); // syscall for exit
+    asm_code.push_str("    syscall\n"); // invoke syscall
 
     asm_code
 }

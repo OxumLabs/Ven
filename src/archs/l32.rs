@@ -14,7 +14,7 @@ pub fn lfor32(tokens: Vec<Types>) -> String {
                 let message_label = format!("message_{}", msglb);
                 let message_len_label = format!("message_len_{}", msglb);
 
-                messages.push(format!("{} db '{}', 0", message_label, text));
+                messages.push(format!("{} db {}, 0", message_label, text));
                 message_lengths.push(format!("{} equ $ - {}", message_len_label, message_label));
 
                 msglb += 1;

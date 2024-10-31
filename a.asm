@@ -7,12 +7,12 @@ section .text
 global _start
 
 _start:
-    mov rax, 1
-    mov rdi, 1
-    mov rsi, message_0
-    mov rdx, message_len_0
-    syscall
+    mov eax, 4
+    mov ebx, 1
+    mov ecx, message_0
+    mov edx, message_len_0
+    int 0x80
 
-    mov rax, 60
-    xor rdi, rdi
-    syscall
+    mov eax, 1
+    xor ebx, ebx
+    int 0x80
