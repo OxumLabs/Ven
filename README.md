@@ -20,7 +20,7 @@
     - use ``@`` to define **static variables**
     - use ``!@`` to define variables that can change , aka **mutable variables**
     - there are 3 types of variables for now and they are ``i`` for integer , ``f`` for float and ``str`` for string 
-    - variables can be declared in the following vway : ``@ name str jay`` **notice how you dont provide ``=`` or `'` as they have special meanings in ven and ven auto adds ``'`` by checking the type!**
+    - variables can be declared in the following way : ``@ name str jay`` **notice how you dont provide ``=`` or `'` as they have special meanings in ven and ven auto adds ``'`` by checking the type!**
 - #### Printing
     - you can print to stdout using `>` followed by the text , here **you need to add `'` around text and separate variables and text using , but make sure to close the text , new line character is the **Assembly** language way so ``0x0A``
     - example - ``> 'hello world',0X0A``
