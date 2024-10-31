@@ -1,2 +1,4 @@
-display 'hi' , 0x0A
-display 'no'
+> 'hi' ;prints to stdout
+;this is a comment
+!@ jay str jay ;make mutable variable
+@ i age 16 ;make immutable variable
