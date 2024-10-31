@@ -1,4 +1,7 @@
-use crate::{archs::{l32::lfor32, l64::lfor64, mac32::m32, mac64::m64, win32::w32, win64::w64}, types::Types};
+use crate::{
+    archs::{l32::lfor32, l64::lfor64, mac32::m32, mac64::m64, win32::w32, win64::w64},
+    types::Types,
+};
 pub fn mkasm(tokens: Vec<Types>, target: String) -> String {
     let mut asm_code = String::new();
     match target.as_str() {
@@ -12,6 +15,3 @@ pub fn mkasm(tokens: Vec<Types>, target: String) -> String {
     }
     asm_code
 }
-
-
-

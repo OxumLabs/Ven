@@ -1,2 +1,2 @@
-display Hello world!
-vr str name 0
+display 'hi' , 0x0A
+display 'no'

@@ -1,15 +1,52 @@
 use crate::types::Types;
 
+#[allow(unused)]
+
 pub fn pven(code: String) -> Vec<Types> {
     let mut ts: Vec<Types> = Vec::new();
-    
+
     for ln in code.lines() {
         let ln = ln.trim();
-        
+
         if ln.starts_with("display ") {
-            let text = &ln[8..];
-            println!("To Print: {}", text);
-            ts.push(Types::Print(text.to_string()));
+            let text = &ln[8..].trim();
+            let mut open_quotes = 0;
+            let mut has_comma = false;
+            let mut processed_text = String::new();
+            let mut is_valid = true;
+
+            for (i, ch) in text.chars().enumerate() {
+                if ch == '\'' {
+                    open_quotes += 1;
+                    if i > 0 && text.chars().nth(i - 1) == Some('\\') {
+                        continue;
+                    }
+                } else if ch == ',' {
+                    has_comma = true;
+                    if open_quotes % 2 != 0 {
+                        is_valid = false;
+                        break;
+                    }
+                } else if ch == '\n' {
+                    is_valid = false;
+                    break;
+                }
+                processed_text.push(ch);
+            }
+
+            if open_quotes % 2 != 0 {
+                is_valid = false;
+            }
+
+            if is_valid {
+                if processed_text.ends_with(',') {
+                    processed_text.pop();
+                }
+                println!("To Print: {}", processed_text);
+                ts.push(Types::Print(processed_text));
+            } else {
+                println!("Failed to process: {}", text);
+            }
         } else if ln.starts_with("vr ") {
             let mut parts = ln.split_whitespace();
 
@@ -30,8 +67,7 @@ pub fn pven(code: String) -> Vec<Types> {
             } else {
                 eprintln!("Error: Invalid variable declaration: {}", ln);
             }
-        }
-        else if ln.starts_with("mvr ") {
+        } else if ln.starts_with("mvr ") {
             let mut parts = ln.split_whitespace();
 
             if let (Some(var_name), Some(var_type)) = (parts.next(), parts.next()) {
@@ -53,6 +89,6 @@ pub fn pven(code: String) -> Vec<Types> {
             }
         }
     }
-    
+
     ts
 }
