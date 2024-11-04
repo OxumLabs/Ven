@@ -52,7 +52,6 @@ fn main() {
                 };
 
                 let asm = mkasm::mkasm(pc, target.clone());
-                println!("asm for target '{}':\n{}",target,asm);
                 let asm_file_path = "a.asm";
 
                 match File::create(asm_file_path) {
@@ -85,9 +84,8 @@ fn main() {
 
 fn compile_target(target: &str, object_file: &str, custom_linker: Option<&str>) -> bool {
     let nasm_cmd = match OS {
-        "linux" => "nasm",
+        "linux" | "macos" => "nasm",
         "windows" => "./nasm.exe",
-        "macos" => "nasm",
         _ => {
             eprintln!("Unsupported Platform!");
             exit(1);
@@ -140,9 +138,7 @@ fn compile_target(target: &str, object_file: &str, custom_linker: Option<&str>) 
     });
 
     let linker_args = match linker {
-        "lld-link" => vec!["/OUT:a.exe", "/SUBSYSTEM:CONSOLE", object_file],
-        "tdm-gcc" => vec!["/OUT:a.exe", "/SUBSYSTEM:CONSOLE", object_file],
-        "link" => vec!["/OUT:a.exe", object_file],
+        "lld-link" | "tdm-gcc" | "link" => vec!["/OUT:a.exe", "/SUBSYSTEM:CONSOLE", object_file],
         "ld.lld" => match target {
             "l64" => vec!["-o", "a.out", object_file, "-no-pie"],
             "l32" => vec!["-m", "elf_i386", "-o", "a.out", object_file],
@@ -150,7 +146,7 @@ fn compile_target(target: &str, object_file: &str, custom_linker: Option<&str>) 
         },
         "ld" => match target {
             "m64" | "m32" => vec!["-o", "a.out", object_file],
-            _ => unreachable!(),
+            _ => vec!["", ""],
         },
         _ => {
             eprintln!("Unsupported linker: {}", linker);

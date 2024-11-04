@@ -43,6 +43,7 @@ pub fn m32(tokens: Vec<Types>) -> String {
                 }
                 _ => {}
             },
+            _ => {}
         }
     }
 

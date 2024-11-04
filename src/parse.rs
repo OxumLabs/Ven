@@ -1,16 +1,15 @@
 use crate::types::Types;
+use std::collections::HashSet;
 
 #[allow(unused)]
 pub fn pven(code: String) -> Vec<Types> {
     let mut ts: Vec<Types> = Vec::new();
+    let mut defined_vars: HashSet<String> = HashSet::new();
+    let mut used_vars: HashSet<String> = HashSet::new();
 
     for ln in code.lines() {
         let ln = ln.trim();
-        let ln = if let Some(pos) = ln.find(';') {
-            &ln[..pos].trim()
-        } else {
-            ln
-        };
+        let ln = if let Some(pos) = ln.find(';') { &ln[..pos].trim() } else { ln };
 
         if ln.is_empty() {
             continue;
@@ -18,31 +17,66 @@ pub fn pven(code: String) -> Vec<Types> {
 
         if ln.starts_with("> ") {
             let text = &ln[2..].trim();
-            let mut open_quotes = 0;
-            let mut is_valid = true;
-            let mut processed_text = String::new();
+            let mut open_quotes = false;
+            let mut segment = String::new();
+            let mut collecting_var = false;
 
-            for (i, ch) in text.chars().enumerate() {
-                if ch == '\'' {
-                    open_quotes += 1;
-                    if i > 0 && text.chars().nth(i - 1) == Some('\\') {
-                        continue;
+            for ch in text.chars() {
+                match ch {
+                    '\'' => {
+                        open_quotes = !open_quotes;
+                        segment.push(ch);
+                        if !open_quotes && !segment.is_empty() {
+                            ts.push(Types::Print(segment.clone()));
+                            segment.clear();
+                        }
+                    },
+                    ',' if !open_quotes => {
+                        if collecting_var {
+                            let trimmed_var = segment.trim().to_string();
+                            if trimmed_var == "\n" || trimmed_var == "0x0A" {
+                                ts.push(Types::Print(trimmed_var.clone()));
+                            } else if defined_vars.contains(&trimmed_var) {
+                                used_vars.insert(trimmed_var.clone());
+                                ts.push(Types::PVarUse(trimmed_var.clone()));
+                            }
+                            segment.clear();
+                            collecting_var = false;
+                        }
+                    },
+                    _ => {
+                        if open_quotes {
+                            segment.push(ch);
+                        } else if ch.is_alphanumeric() || ch == '_' {
+                            segment.push(ch);
+                            collecting_var = true;
+                        } else if collecting_var {
+                            let trimmed_var = segment.trim().to_string();
+                            if defined_vars.contains(&trimmed_var) {
+                                used_vars.insert(trimmed_var.clone());
+                                ts.push(Types::PVarUse(trimmed_var.clone()));
+                            }
+                            segment.clear();
+                            collecting_var = false;
+                        }
                     }
                 }
-                processed_text.push(ch);
             }
 
-            if open_quotes % 2 != 0 {
-                is_valid = false;
+            if open_quotes && !segment.is_empty() {
+                ts.push(Types::Print(segment.clone()));
+            } else if collecting_var && !segment.is_empty() {
+                let trimmed_var = segment.trim().to_string();
+                if trimmed_var == "\n" || trimmed_var == "0x0A" {
+                    ts.push(Types::Print(trimmed_var.clone()));
+                } else if defined_vars.contains(&trimmed_var) {
+                    used_vars.insert(trimmed_var.clone());
+                    ts.push(Types::PVarUse(trimmed_var.clone()));
+                }
             }
-
-            if is_valid {
-                ts.push(Types::Print(processed_text));
-            } else {
-                println!("Failed to process: {}", text);
-            }
-        } else if ln.starts_with("@ ") {
-            let clean_line = ln.trim_start_matches('@').trim();
+        } else if ln.starts_with("@ ") || ln.starts_with("!@ ") {
+            let is_multivar = ln.starts_with("!@ ");
+            let clean_line = if is_multivar { ln.trim_start_matches("!@") } else { ln.trim_start_matches('@') }.trim();
             let mut parts = clean_line.split_whitespace();
 
             if let (Some(var_name), Some(var_type)) = (parts.next(), parts.next()) {
@@ -53,28 +87,22 @@ pub fn pven(code: String) -> Vec<Types> {
                     "str" => "txt".to_string(),
                     _ => continue,
                 };
-                ts.push(Types::SVar(var_name.to_string(), value, var_type_string));
+                defined_vars.insert(var_name.to_string());
+                if is_multivar {
+                    ts.push(Types::MVar(var_name.to_string(), value, var_type_string));
+                } else {
+                    ts.push(Types::SVar(var_name.to_string(), value, var_type_string));
+                }
             }
-        } else if ln.starts_with("!@ ") {
-            let clean_line = ln.trim_start_matches("!@").trim();
-            let mut parts: Vec<&str> = clean_line.split_whitespace().collect();
-
-            if parts.len() < 3 {
-                continue;
-            }
-
-            let var_name = parts[0];
-            let var_type = parts[1];
-            let value = parts[2..].join(" ");
-            let var_type_string = match var_type {
-                "i" => "num".to_string(),
-                "f" => "dec".to_string(),
-                "str" => "txt".to_string(),
-                _ => continue,
-            };
-            ts.push(Types::MVar(var_name.to_string(), value, var_type_string));
         }
     }
+
+    ts.retain(|var| {
+        match var {
+            Types::SVar(name, _, _) | Types::MVar(name, _, _) => defined_vars.contains(name) && used_vars.contains(name),
+            _ => true,
+        }
+    });
 
     ts
 }

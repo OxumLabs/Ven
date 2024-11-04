@@ -35,6 +35,7 @@ pub fn w64(tokens: Vec<Types>) -> String {
                     _ => {}
                 }
             }
+            _ => {}
         }
     }
 

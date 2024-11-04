@@ -44,6 +44,7 @@ pub fn w32(tokens: Vec<Types>) -> String {
                     _ => {}
                 }
             }
+            _ => {}
         }
     }
 

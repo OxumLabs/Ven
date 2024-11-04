@@ -47,6 +47,7 @@ pub fn lfor32(tokens: Vec<Types>) -> String {
                     eprintln!("Unsupported mutable variable type: {}", vtype);
                 }
             },
+            _ => {}
         }
     }
 

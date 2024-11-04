@@ -43,6 +43,7 @@ pub fn m64(tokens: Vec<Types>) -> String {
                 }
                 _ => {}
             },
+            _ => {}
         }
     }
 
