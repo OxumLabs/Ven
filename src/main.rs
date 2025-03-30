@@ -10,10 +10,19 @@ pub mod archs;
 pub mod mkasm;
 pub mod parse;
 pub mod types;
+pub mod repl;
 
 fn main() {
     let args: Vec<String> = args().collect();
 
+    // If no arguments provided, enter REPL mode
+    if args.len() == 1 {
+        let mut repl = repl::Repl::new();
+        repl.start();
+        return;
+    }
+
+    // Regular compilation mode
     if args.len() < 3 || args.len() > 4 {
         print_usage("Invalid number of arguments provided!");
         exit(1);
