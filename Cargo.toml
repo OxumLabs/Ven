@@ -1,0 +1,22 @@
+[package]
+name = "ven"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+memchr = "2.7.4"
+
+[profile.release]
+# Optimize for size
+opt-level = "z"
+# Optimize for speed
+codegen-units = 1
+# Optimize for LTO
+lto = true
+# Optimize for debug info
+debug = false
+# Optimize for panic
+panic = "abort"
+# Optimize for overflow checks
+overflow-checks = false
+
