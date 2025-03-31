@@ -22,7 +22,7 @@ pub enum Expression {
 }
 
 /// Represents the available math operations.
-#[derive(Debug, Clone,PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MathOperator {
     Add,
     Subtract,
@@ -304,7 +304,6 @@ impl<'a> ParserState<'a> {
    
        // Parse variable name
        let name_token = self.current_token()?;
-       println!("name_token: {}", self.get_lexeme(name_token));
        if name_token.kind != TokenKind::Identifier {
            return None;
        }
@@ -431,16 +430,22 @@ impl<'a> ParserState<'a> {
         let mut parts = Vec::with_capacity(4);
         while self.pos < self.tokens.len() {
             let token = self.tokens[self.pos];
-            if self.get_lexeme(&token) == "\n" {
+            let lex = self.get_lexeme(&token);
+            if lex == "\n" {
                 break;
             }
-            parts.push(self.get_lexeme(&token).to_string());
+            // If token is Unknown and its lexeme is "{" or "}", skip it.
+            if token.kind == TokenKind::Unknown && (lex == "{" || lex == "}") {
+                self.pos += 1;
+                continue;
+            }
+            parts.push(lex.to_string());
             self.pos += 1;
         }
         if self.pos == start {
             return None;
         }
-        let literal = parts.join("").trim().to_string();
+        let literal = parts.join("").to_string();
         self.check_placeholders(&literal);
         Some(Expression::Literal(literal))
     }

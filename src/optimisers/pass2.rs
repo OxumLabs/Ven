@@ -26,20 +26,14 @@ fn build_inline_map(ast: &AST) -> InlineMap {
     match ast {
         AST::Program(nodes) => {
             for node in nodes {
-                if let ASTNode::VarDeclaration {
-                    mutable,
-                    name,
-                    value,
-                    ..
-                } = node
-                {
-                    if !*mutable {
-                        if let Some(Expression::Literal(lit)) = value {
-                            map.insert(name.clone(), lit.clone());
+                    if let ASTNode::VarDeclaration { mutable, name, value, .. } = node {
+                        if !*mutable {
+                            if let Some(Expression::Literal(lit)) = value {
+                                map.insert(name.clone(), lit.clone());
+                            }
                         }
                     }
                 }
-            }
         }
     }
     map
@@ -48,39 +42,18 @@ fn build_inline_map(ast: &AST) -> InlineMap {
 #[inline(always)]
 fn inline_node(node: ASTNode, inline_map: &InlineMap) -> ASTNode {
     match node {
-        ASTNode::VarDeclaration {
-            mutable,
-            name,
-            var_type,
-            value,
-        } => {
+        ASTNode::VarDeclaration { mutable, name, var_type, value } => {
             let new_value = value.map(|expr| inline_expr(expr, inline_map));
-            ASTNode::VarDeclaration {
-                mutable,
-                name,
-                var_type,
-                value: new_value,
-            }
+            ASTNode::VarDeclaration { mutable, name, var_type, value: new_value }
         }
         ASTNode::Input { name } => ASTNode::Input { name },
         ASTNode::Print { to_stderr, expr } => {
             let new_expr = expr.map(|e| inline_expr(e, inline_map));
-            ASTNode::Print {
-                to_stderr,
-                expr: new_expr,
-            }
+            ASTNode::Print { to_stderr, expr: new_expr }
         }
-        ASTNode::MathOp {
-            name,
-            operator,
-            operand,
-        } => {
+        ASTNode::MathOp { name, operator, operand } => {
             let new_operand = inline_expr(operand, inline_map);
-            ASTNode::MathOp {
-                name,
-                operator,
-                operand: new_operand,
-            }
+            ASTNode::MathOp { name, operator, operand: new_operand }
         }
     }
 }
@@ -88,32 +61,41 @@ fn inline_node(node: ASTNode, inline_map: &InlineMap) -> ASTNode {
 #[inline(always)]
 fn inline_expr(expr: Expression, inline_map: &InlineMap) -> Expression {
     match expr {
-        Expression::Identifier(id) => inline_map
-            .get(&id)
+        Expression::Identifier(id) => inline_map.get(&id)
             .map(|s| Expression::Literal(s.clone()))
             .unwrap_or(Expression::Identifier(id)),
-        Expression::Literal(lit) => Expression::Literal(replace_placeholders(&lit, inline_map)),
+        Expression::Literal(lit) => Expression::Literal(unsafe { replace_placeholders(lit.as_str(), inline_map) }),
     }
 }
 
+/// Ultra‑fast replacement of placeholders in a literal using unsafe pointer arithmetic.
+/// This function is declared unsafe and further wraps every unsafe operation in explicit unsafe blocks.
 #[inline(always)]
-fn replace_placeholders(literal: &str, inline_map: &InlineMap) -> String {
-    use memchr::memchr;
-    let mut result = String::with_capacity(literal.len());
-    let bytes = literal.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if i > 0 && bytes[i - 1] == b'\\' {
-                result.push('{');
-                i += 1;
-            } else {
+unsafe fn replace_placeholders(literal: &str, inline_map: &InlineMap) -> String {
+    #[allow(unused_unsafe)]
+    unsafe {
+        let bytes = literal.as_bytes();
+        let len = bytes.len();
+        let mut result = String::with_capacity(len);
+        let ptr = bytes.as_ptr();
+        let mut i: usize = 0;
+        while i < len {
+            let b = unsafe { *ptr.add(i) };
+            if b == b'{' {
+                // Check for escaped '{'
+                if i > 0 && unsafe { *ptr.add(i - 1) } == b'\\' {
+                    result.push('{');
+                    i += 1;
+                    continue;
+                }
                 let start = i + 1;
-                if let Some(close_rel) = memchr(b'}', &bytes[start..]) {
-                    let end = start + close_rel;
-                    let placeholder = &literal[start..end].trim();
+                // Use memchr to locate the closing '}'
+                if let Some(rel) = memchr::memchr(b'}', &bytes[start..]) {
+                    let end = start + rel;
+                    let placeholder = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
                     if !placeholder.is_empty() {
-                        if let Some(replacement) = inline_map.get(*placeholder) {
+                        let key = placeholder.trim();
+                        if let Some(replacement) = inline_map.get(key) {
                             result.push_str(replacement);
                         } else {
                             result.push('{');
@@ -122,16 +104,20 @@ fn replace_placeholders(literal: &str, inline_map: &InlineMap) -> String {
                         }
                     }
                     i = end + 1;
+                    continue;
                 } else {
-                    result.push_str(&literal[i..]);
+                    result.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[i..]) });
                     break;
                 }
+            } else {
+                result.push(unsafe { *ptr.add(i) } as char);
+                i += 1;
             }
-        } else {
-            // Fast copy using byte-wise push. Note: this may not handle multibyte characters correctly.
-            result.push(literal.chars().nth(i).unwrap());
-            i += 1;
         }
+        // Remove exactly one leading space if it exists.
+        if result.as_bytes().first() == Some(&b' ') {
+            result = unsafe { result.get_unchecked(1..).to_string() };
+        }
+        result
     }
-    result
 }

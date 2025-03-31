@@ -1,0 +1,17 @@
+AST Tree:
+├── VarDeclaration
+│   ├── Name: name
+│   ├── Mutable: true
+│   └── Type: String
+│       └── Value:
+│           └── Literal: joy
+├── Print
+│   ├── to_stderr: false
+│   └── Expression:
+│       └── Literal: ur name?>
+├── Input
+│       └── Name: name
+└── Print
+    ├── to_stderr: false
+    └── Expression:
+        └── Literal: {name} , nice to meet u!\n

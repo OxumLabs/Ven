@@ -14,6 +14,7 @@ pub fn optimize_pass1(ast: &mut AST) {
             let mut optimized = Vec::with_capacity(nodes.len());
             let mut i = 0;
             while i < nodes.len() {
+                    // Combine adjacent Print nodes with the same `to_stderr` value.
                     if let ASTNode::Print { to_stderr, ref expr } = nodes[i] {
                         let mut combined = expr.clone().unwrap_or(Expression::Literal(String::new()));
                         let mut j = i + 1;
@@ -22,13 +23,21 @@ pub fn optimize_pass1(ast: &mut AST) {
                                 if t == to_stderr {
                                     let s1 = expr_to_string(&combined);
                                     let s2 = expr_to_string(expr.as_ref().unwrap_or(&Expression::Literal(String::new())));
-                                    combined = Expression::Literal(format!("{} {}", s1, s2).trim().to_string());
+                                    // Use format! to combine strings (this allocates, but it's simple and fast)
+                                    combined = Expression::Literal(format!("{}{}", s1, s2));
                                     j += 1;
                                 } else {
                                     break;
                                 }
                             } else {
                                 break;
+                            }
+                        }
+                        // Remove exactly one leading space if present.
+                        if let Expression::Literal(ref s) = combined {
+                            if s.starts_with(' ') {
+                                let new_str = s.replacen(" ", "", 1);
+                                combined = Expression::Literal(new_str);
                             }
                         }
                         optimized.push(ASTNode::Print { to_stderr, expr: Some(combined) });
@@ -78,31 +87,36 @@ fn collect_used_vars_in_expression(expr: &Expression, used: &mut HashSet<String>
     match expr {
         Expression::Identifier(name) => { used.insert(name.clone()); },
         Expression::Literal(lit) => {
-            // Use memchr for faster scanning.
+            // Optimized scanning using memchr and unsafe pointer arithmetic.
             use memchr::memchr;
             let bytes = lit.as_bytes();
+            let len = bytes.len();
             let mut i = 0;
-            while i < bytes.len() {
-                if bytes[i] == b'{' {
-                    // Skip if escaped.
-                    if i > 0 && bytes[i - 1] == b'\\' {
-                        i += 1;
-                        continue;
-                    }
-                    if let Some(close_rel) = memchr(b'}', &bytes[i + 1..]) {
-                        let close = i + 1 + close_rel;
-                        let var_name = &lit[i + 1..close];
-                        let var_name = var_name.trim();
-                        if !var_name.is_empty() {
-                            used.insert(var_name.to_string());
+            unsafe {
+                let ptr = bytes.as_ptr();
+                while i < len {
+                    if *ptr.add(i) == b'{' {
+                        // Skip escaped '{'
+                        if i > 0 && *ptr.add(i - 1) == b'\\' {
+                            i += 1;
+                            continue;
                         }
-                        i = close + 1;
-                        continue;
-                    } else {
-                        break;
+                        if let Some(rel) = memchr(b'}', &bytes[i + 1..]) {
+                            let close = i + 1 + rel;
+                            // SAFETY: We assume the substring is valid UTF-8.
+                            let var_name = std::str::from_utf8_unchecked(&bytes[i + 1..close]);
+                            let trimmed = var_name.trim();
+                            if !trimmed.is_empty() {
+                                used.insert(trimmed.to_string());
+                            }
+                            i = close + 1;
+                            continue;
+                        } else {
+                            break;
+                        }
                     }
+                    i += 1;
                 }
-                i += 1;
             }
         },
     }

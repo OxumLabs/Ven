@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::process::exit;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use optimisers::pass1::optimize_pass1;
 use optimisers::pass2::pass2;
@@ -22,12 +23,31 @@ pub mod optimisers;
 pub mod parse1;
 pub mod transpilers;
 
+/// Formats a Duration into a human-readable string using µs, ms, s, or min.
+fn format_duration(duration: Duration) -> String {
+    let micros = duration.as_micros();
+    if micros < 1_000 {
+        return format!("{} µs", micros);
+    }
+    let millis = duration.as_millis();
+    if millis < 1_000 {
+        return format!("{} ms", millis);
+    }
+    let secs = duration.as_secs_f64();
+    if secs < 60.0 {
+        return format!("{:.2} s", secs);
+    }
+    let mins = secs / 60.0;
+    format!("{:.2} min", mins)
+}
+
 fn print_help() {
     println!("Ven Engine");
-    println!("├── --in=<file_path.ven>   Input file (must end with .ven)");
-    println!("├── -t=<rs/rust,c,llvm>           Target output format");
-    println!("├── -h, --help             Show help information");
-    println!("└── -v, --version, --ver   Show version information");
+    println!("├── --in=<file_path.ven>         Input file (must end with .ven)");
+    println!("├── -t=<rs/rust,c,llvm,lx8664>     Target output format");
+    println!("├── --show-msgs or -sm            Show messages in a tree-like view");
+    println!("├── -h, --help                   Show help information");
+    println!("└── -v, --version, --ver         Show version information");
 }
 
 fn print_version() {
@@ -44,6 +64,7 @@ fn main() {
 
     let mut input_file: Option<String> = None;
     let mut target: Option<String> = None;
+    let mut show_msgs = false;
 
     for arg in &args[1..] {
         if arg == "-h" || arg == "--help" {
@@ -56,6 +77,8 @@ fn main() {
             input_file = Some(arg.trim_start_matches("--in=").to_string());
         } else if arg.starts_with("-t=") || arg.starts_with("--target=") {
             target = Some(arg.trim_start_matches("-t=").trim_start_matches("--target=").to_string());
+        } else if arg == "--show-msgs" || arg == "-sm" {
+            show_msgs = true;
         }
     }
 
@@ -90,65 +113,118 @@ fn main() {
         }
     };
 
+    if show_msgs {
+        println!("Running:");
+    }
+
+    // --- Tokenizing ---
+    let start = Instant::now();
     let mut tokenizer = Tokenizer::new(&code);
     tokenizer.tokenize();
+    let token_time = start.elapsed();
+    if show_msgs {
+        println!("├── Tokenizing... took {}", format_duration(token_time));
+    }
 
+    // --- Parsing AST ---
+    let start = Instant::now();
     let (mut ast, _var_map, errors) = AST::parse(&tokenizer.tokens, &code);
-
+    let parse_time = start.elapsed();
+    if show_msgs {
+        println!("├── Parsing AST... took {}", format_duration(parse_time));
+    }
     if !errors.is_empty() {
         print_errors(&errors);
         exit(1);
     }
+
+    // --- Optimizing AST (pass1) ---
+    let start = Instant::now();
     optimize_pass1(&mut ast);
+    let opt1_time = start.elapsed();
+    if show_msgs {
+        println!("├── Optimizing AST (pass1)... took {}", format_duration(opt1_time));
+    }
+
+    // --- Optimizing AST (pass2) ---
+    let start = Instant::now();
     let ast = pass2(ast);
-    ast.debug();
+    let opt2_time = start.elapsed();
+    if show_msgs {
+        println!("├── Optimizing AST (pass2)... took {}", format_duration(opt2_time));
+    }
 
+    // --- Transpiling ---
+    if show_msgs {
+        println!("├── Transpiling to {}...", target_lang);
+    }
     if target_lang == "rust" {
+        let start = Instant::now();
         let rust_code = transpile_rs(&ast);
-
+        let transp_time = start.elapsed();
         let output_path = Path::new(&input_path).with_extension("rs");
         match fs::write(&output_path, rust_code) {
-            Ok(_) => println!("Successfully transpiled to Rust: {}", output_path.display()),
+            Ok(_) => {
+                if show_msgs {
+                    println!("└── Transpiling to Rust... took {}", format_duration(transp_time));
+                }
+                println!("Successfully transpiled to Rust: {}", output_path.display());
+            },
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);
             }
         }
-    }
-    else if target_lang == "c" {
-        let rust_code = transpile_c(&ast);
-
+    } else if target_lang == "c" {
+        let start = Instant::now();
+        let c_code = transpile_c(&ast);
+        let transp_time = start.elapsed();
         let output_path = Path::new(&input_path).with_extension("c");
-        match fs::write(&output_path, rust_code) {
-            Ok(_) => println!("Successfully transpiled to C: {}", output_path.display()),
+        match fs::write(&output_path, c_code) {
+            Ok(_) => {
+                if show_msgs {
+                    println!("└── Transpiling to C... took {}", format_duration(transp_time));
+                }
+                println!("Successfully transpiled to C: {}", output_path.display());
+            },
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);
             }
         }
-    }
-    else if target_lang == "llvm" {
-        let rust_code = transpile_llvm(&ast);
-
+    } else if target_lang == "llvm" {
+        let start = Instant::now();
+        let llvm_code = transpile_llvm(&ast);
+        let transp_time = start.elapsed();
         let output_path = Path::new(&input_path).with_extension("ll");
-        match fs::write(&output_path, rust_code) {
-            Ok(_) => println!("Successfully transpiled to LLVM_IR: {}", output_path.display()),
+        match fs::write(&output_path, llvm_code) {
+            Ok(_) => {
+                if show_msgs {
+                    println!("└── Transpiling to LLVM_IR... took {}", format_duration(transp_time));
+                }
+                println!("Successfully transpiled to LLVM_IR: {}", output_path.display());
+            },
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);
             }
         }
-    }
-    else if target_lang == "lx8664" {
-        let rust_code = transpile_lx8664(&ast);
+    } else if target_lang == "lx8664" {
+        let start = Instant::now();
+        let asm_code = transpile_lx8664(&ast);
+        let transp_time = start.elapsed();
         let output_path = Path::new(&input_path).with_extension("asm");
-        match fs::write(&output_path, rust_code) {
-            Ok(_) => println!("Successfully transpiled to x86_64 Assembly: {}", output_path.display()),
+        match fs::write(&output_path, asm_code) {
+            Ok(_) => {
+                if show_msgs {
+                    println!("└── Transpiling to x86_64 Assembly... took {}", format_duration(transp_time));
+                }
+                println!("Successfully transpiled to x86_64 Assembly: {}", output_path.display());
+            },
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);
             }
         }
     }
-    
 }
