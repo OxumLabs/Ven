@@ -26,14 +26,20 @@ fn build_inline_map(ast: &AST) -> InlineMap {
     match ast {
         AST::Program(nodes) => {
             for node in nodes {
-                    if let ASTNode::VarDeclaration { mutable, name, value, .. } = node {
-                        if !*mutable {
-                            if let Some(Expression::Literal(lit)) = value {
-                                map.insert(name.clone(), lit.clone());
-                            }
+                if let ASTNode::VarDeclaration {
+                    mutable,
+                    name,
+                    value,
+                    ..
+                } = node
+                {
+                    if !*mutable {
+                        if let Some(Expression::Literal(lit)) = value {
+                            map.insert(name.clone(), lit.clone());
                         }
                     }
                 }
+            }
         }
     }
     map
@@ -42,18 +48,50 @@ fn build_inline_map(ast: &AST) -> InlineMap {
 #[inline(always)]
 fn inline_node(node: ASTNode, inline_map: &InlineMap) -> ASTNode {
     match node {
-        ASTNode::VarDeclaration { mutable, name, var_type, value } => {
+        ASTNode::If { condition, body } => {
+            let new_condition = inline_expr(condition, inline_map);
+            let new_body = body
+                .into_iter()
+                .map(|n| inline_node(n, inline_map))
+                .collect();
+            ASTNode::If {
+                condition: new_condition,
+                body: new_body,
+            }
+        }
+        ASTNode::VarDeclaration {
+            mutable,
+            name,
+            var_type,
+            value,
+        } => {
             let new_value = value.map(|expr| inline_expr(expr, inline_map));
-            ASTNode::VarDeclaration { mutable, name, var_type, value: new_value }
+            ASTNode::VarDeclaration {
+                mutable,
+                name,
+                var_type,
+                value: new_value,
+            }
         }
         ASTNode::Input { name } => ASTNode::Input { name },
         ASTNode::Print { to_stderr, expr } => {
             let new_expr = expr.map(|e| inline_expr(e, inline_map));
-            ASTNode::Print { to_stderr, expr: new_expr }
+            ASTNode::Print {
+                to_stderr,
+                expr: new_expr,
+            }
         }
-        ASTNode::MathOp { name, operator, operand } => {
+        ASTNode::MathOp {
+            name,
+            operator,
+            operand,
+        } => {
             let new_operand = inline_expr(operand, inline_map);
-            ASTNode::MathOp { name, operator, operand: new_operand }
+            ASTNode::MathOp {
+                name,
+                operator,
+                operand: new_operand,
+            }
         }
     }
 }
@@ -61,10 +99,27 @@ fn inline_node(node: ASTNode, inline_map: &InlineMap) -> ASTNode {
 #[inline(always)]
 fn inline_expr(expr: Expression, inline_map: &InlineMap) -> Expression {
     match expr {
-        Expression::Identifier(id) => inline_map.get(&id)
+        Expression::Identifier(id) => inline_map
+            .get(&id)
             .map(|s| Expression::Literal(s.clone()))
             .unwrap_or(Expression::Identifier(id)),
-        Expression::Literal(lit) => Expression::Literal(unsafe { replace_placeholders(lit.as_str(), inline_map) }),
+        Expression::Literal(lit) => {
+            Expression::Literal(unsafe { replace_placeholders(lit.as_str(), inline_map) })
+        }
+        Expression::BinaryOp { left, operator, right } => {
+            Expression::BinaryOp {
+                left: Box::new(inline_expr(*left, inline_map)),
+                operator,
+                right: Box::new(inline_expr(*right, inline_map)),
+            }
+        }
+        Expression::LogicalOp { left, operator, right } => {
+            Expression::LogicalOp {
+                left: Box::new(inline_expr(*left, inline_map)),
+                operator,
+                right: Box::new(inline_expr(*right, inline_map)),
+            }
+        }
     }
 }
 

@@ -1,6 +1,6 @@
+use memchr::memchr;
 use std::collections::{HashMap, HashSet};
 use std::slice;
-use memchr::memchr;
 
 use crate::parse::{AST, ASTNode, Expression, VarType};
 pub type VarMap = HashMap<String, (VarType, usize)>;
@@ -22,10 +22,14 @@ pub fn optimize_pass1(ast: &mut AST) {
                     let mut exprs = Vec::new();
                     let initial_expr = expr.clone().unwrap_or(Expression::Literal(String::new()));
                     exprs.push(initial_expr);
-                    
+
                     let mut j = i + 1;
                     while j < nodes.len() {
-                        if let ASTNode::Print { to_stderr: t, expr: e } = &nodes[j] {
+                        if let ASTNode::Print {
+                            to_stderr: t,
+                            expr: e,
+                        } = &nodes[j]
+                        {
                             if t == to_stderr {
                                 exprs.push(e.clone().unwrap_or(Expression::Literal(String::new())));
                                 j += 1;
@@ -76,29 +80,42 @@ fn collect_used_vars(ast: &AST) -> HashSet<String> {
 #[inline(always)]
 fn collect_used_vars_in_node(node: &ASTNode, used: &mut HashSet<String>) {
     match node {
-        ASTNode::Input { name } => { used.insert(name.clone()); },
+        ASTNode::If { body, .. } => {
+            for child in body {
+                collect_used_vars_in_node(child, used);
+            }
+        }
+        ASTNode::Input { name } => {
+            used.insert(name.clone());
+        }
         ASTNode::Print { expr, .. } => {
-            if let Some(e) = expr { collect_used_vars_in_expression(e, used); }
-        },
+            if let Some(e) = expr {
+                collect_used_vars_in_expression(e, used);
+            }
+        }
         ASTNode::VarDeclaration { value, .. } => {
-            if let Some(e) = value { collect_used_vars_in_expression(e, used); }
-        },
+            if let Some(e) = value {
+                collect_used_vars_in_expression(e, used);
+            }
+        }
         ASTNode::MathOp { name, operand, .. } => {
             used.insert(name.clone());
             collect_used_vars_in_expression(operand, used);
-        },
+        }
     }
 }
 
 #[inline(always)]
 fn collect_used_vars_in_expression(expr: &Expression, used: &mut HashSet<String>) {
     match expr {
-        Expression::Identifier(name) => { used.insert(name.clone()); },
+        Expression::Identifier(name) => {
+            used.insert(name.clone());
+        }
         Expression::Literal(lit) => {
             let bytes = lit.as_bytes();
             let len = bytes.len();
             let mut i = 0;
-            
+
             unsafe {
                 while i < len {
                     if *bytes.as_ptr().add(i) == b'{' {
@@ -106,8 +123,8 @@ fn collect_used_vars_in_expression(expr: &Expression, used: &mut HashSet<String>
                             i += 1;
                             continue;
                         }
-                        
-                        if let Some(rel_close) = memchr(b'}', &bytes[i+1..]) {
+
+                        if let Some(rel_close) = memchr(b'}', &bytes[i + 1..]) {
                             let close = i + 1 + rel_close;
                             let mut var_start = i + 1;
                             while var_start < close && *bytes.as_ptr().add(var_start) == b' ' {
@@ -118,7 +135,10 @@ fn collect_used_vars_in_expression(expr: &Expression, used: &mut HashSet<String>
                                 var_end -= 1;
                             }
                             if var_start < var_end {
-                                let var_bytes = slice::from_raw_parts(bytes.as_ptr().add(var_start), var_end - var_start);
+                                let var_bytes = slice::from_raw_parts(
+                                    bytes.as_ptr().add(var_start),
+                                    var_end - var_start,
+                                );
                                 if let Ok(var_str) = std::str::from_utf8(var_bytes) {
                                     used.insert(var_str.to_string());
                                 }
@@ -132,7 +152,15 @@ fn collect_used_vars_in_expression(expr: &Expression, used: &mut HashSet<String>
                     }
                 }
             }
-        },
+        }
+        Expression::BinaryOp { left, right, .. } => {
+            collect_used_vars_in_expression(left, used);
+            collect_used_vars_in_expression(right, used);
+        }
+        Expression::LogicalOp { left, right, .. } => {
+            collect_used_vars_in_expression(left, used);
+            collect_used_vars_in_expression(right, used);
+        }
     }
 }
 
@@ -141,5 +169,7 @@ fn expr_to_string(expr: &Expression) -> String {
     match expr {
         Expression::Literal(s) => s.clone(),
         Expression::Identifier(s) => s.clone(),
+        Expression::BinaryOp { .. } => "".to_string(), // Default for now
+        Expression::LogicalOp { .. } => "".to_string(), // Default for now
     }
 }

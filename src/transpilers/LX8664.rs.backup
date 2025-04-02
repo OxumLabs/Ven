@@ -1,0 +1,890 @@
+use crate::parse::{AST, ASTNode, Expression, VarType, ComparisonOperator, LogicalOperator, MathOperator};
+use std::collections::{HashMap, HashSet};
+
+pub fn transpile_lx8664(ast: &AST) -> String {
+    match ast {
+        AST::Program(nodes) => {
+            // 1. Variable tracking
+            let defined_vars = collect_all_variables(nodes);
+            
+            // 2. Check for undefined variables in conditionals
+            for node in nodes {
+                if let ASTNode::If { condition, .. } = node {
+                    let missing = find_missing_variables(condition, &defined_vars);
+                    if !missing.is_empty() {
+                        let vars_list = missing.iter()
+                            .cloned()
+                            .collect::<Vec<String>>()
+                            .join(", ");
+                        
+                        let error_msg = format!("Error: Undefined variable(s) found in condition: {}", vars_list);
+                        return generate_error_code(&error_msg);
+                    }
+                }
+            }
+            
+            // 3. Generate real assembly code
+            generate_assembly_code(nodes)
+        }
+    }
+}
+
+// Find any missing variables used in an expression
+fn find_missing_variables(expr: &Expression, defined_vars: &HashSet<String>) -> HashSet<String> {
+    let mut missing_vars = HashSet::new();
+    
+    match expr {
+        Expression::Identifier(name) => {
+            if !defined_vars.contains(name) {
+                missing_vars.insert(name.clone());
+            }
+        },
+        Expression::BinaryOp { left, right, .. } => {
+            missing_vars.extend(find_missing_variables(left, defined_vars));
+            missing_vars.extend(find_missing_variables(right, defined_vars));
+        },
+        Expression::LogicalOp { left, right, .. } => {
+            missing_vars.extend(find_missing_variables(left, defined_vars));
+            missing_vars.extend(find_missing_variables(right, defined_vars));
+        },
+        _ => {} // Literals don't have variables
+    }
+    
+    missing_vars
+}
+
+// Collect all declared variables from the AST node list
+fn collect_all_variables(nodes: &[ASTNode]) -> HashSet<String> {
+    let mut defined_vars = HashSet::new();
+    
+    for node in nodes {
+        match node {
+            ASTNode::VarDeclaration { name, .. } => {
+                defined_vars.insert(name.clone());
+            },
+            ASTNode::Input { name } => {
+                defined_vars.insert(name.clone());
+            },
+            _ => {} // Other node types don't declare variables
+        }
+    }
+    
+    defined_vars
+}
+
+// Generate error code for assembly
+fn generate_error_code(error_msg: &str) -> String {
+    let mut code = String::new();
+    
+    // Data section for error message
+    code.push_str("section .data\n");
+    code.push_str(&format!("    error_msg: db \"{}\", 0x0A, 0\n", error_msg));
+    code.push_str("    error_len: equ $ - error_msg\n\n");
+    
+    // Text section with error handling
+    code.push_str("section .text\n");
+    code.push_str("    global _start\n\n");
+    code.push_str("_start:\n");
+    code.push_str("    ;; Print error message\n");
+    code.push_str("    mov rax, 1          ;; syscall: write\n");
+    code.push_str("    mov rdi, 2          ;; file descriptor: stderr\n");
+    code.push_str("    mov rsi, error_msg  ;; message address\n");
+    code.push_str("    mov rdx, error_len  ;; message length\n");
+    code.push_str("    syscall\n\n");
+    code.push_str("    ;; Exit with error code 1\n");
+    code.push_str("    mov rax, 60         ;; syscall: exit\n");
+    code.push_str("    mov rdi, 1          ;; exit code 1 (error)\n");
+    code.push_str("    syscall\n");
+    
+    code
+}
+
+// Add initialization function to ensure consistent program setup
+fn generate_program_init(code: &mut String) {
+    code.push_str("_start:\n");
+    code.push_str("    ;; Initialize program\n");
+    code.push_str("    xor eax, eax        ;; Clear EAX\n");
+    code.push_str("    xor ebx, ebx        ;; Clear EBX\n");
+    code.push_str("    xor ecx, ecx        ;; Clear ECX\n");
+    code.push_str("    xor edx, edx        ;; Clear EDX\n\n");
+}
+
+// Main function to generate assembly code
+fn generate_assembly_code(nodes: &[ASTNode]) -> String {
+    let mut code = String::new();
+    let mut var_map: HashMap<String, (VarType, u32)> = HashMap::new();
+    let mut string_literals: Vec<(String, String)> = Vec::new();
+    let mut label_count = 0;
+    let mut needs_int_conversion = false;
+    let mut _has_float_operations = false;
+    
+    // Process all nodes first to determine needed features
+    for node in nodes {
+        if let ASTNode::Print { expr, .. } = node {
+            if let Some(Expression::Identifier(_var_name)) = expr {
+                // Need to check based on declared variables, so build map first
+                if let ASTNode::VarDeclaration { name, var_type, .. } = node {
+                    match var_type {
+                        VarType::Int => needs_int_conversion = true,
+                        VarType::Float => {
+                            needs_int_conversion = true; // We use similar conversion
+                            _has_float_operations = true;
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    // Start with data section
+    code.push_str("section .data\n");
+    
+    // Process variable declarations for data section
+    for node in nodes {
+        if let ASTNode::VarDeclaration { name, var_type, value, .. } = node {
+            match var_type {
+                VarType::Int => {
+                    let init_value = match value {
+                        Some(Expression::Literal(val)) => val.parse::<i32>().unwrap_or(0),
+                        _ => 0,
+                    };
+                    code.push_str(&format!("    {}: dd {}\n", name, init_value));
+                    var_map.insert(name.clone(), (var_type.clone(), 4)); // 4 bytes for int
+                },
+                VarType::Float => {
+                    let init_value = match value {
+                        Some(Expression::Literal(val)) => val.parse::<f32>().unwrap_or(0.0),
+                        _ => 0.0,
+                    };
+                    code.push_str(&format!("    {}: dd {:.6}\n", name, init_value));
+                    var_map.insert(name.clone(), (var_type.clone(), 4)); // 4 bytes for float
+                },
+                VarType::String => {
+                    let init_value = match value {
+                        Some(Expression::Literal(val)) => val.clone(),
+                        _ => "".to_string(),
+                    };
+                    // Clean the string literal (remove quotes if present)
+                    let clean_str = init_value.trim_matches('"');
+                    code.push_str(&format!("    {}: db \"{}\", 0\n", name, clean_str));
+                    code.push_str(&format!("    {}_len: equ $ - {} - 1\n", name, name)); // -1 to exclude null terminator
+                    var_map.insert(name.clone(), (var_type.clone(), clean_str.len() as u32 + 1)); // +1 for null terminator
+                },
+                VarType::Char { size } => {
+                    code.push_str(&format!("    {}: times {} db 0\n", name, size));
+                    var_map.insert(name.clone(), (var_type.clone(), *size as u32));
+                },
+            }
+        }
+    }
+    
+    // Add buffer for user input
+    code.push_str("    input_buffer: times 256 db 0\n");
+    
+    // Add common strings for print operations
+    code.push_str("    newline: db 0x0A, 0\n");
+    code.push_str("    newline_len: equ $ - newline - 1\n");
+    
+    // Add buffer for integer conversion if needed
+    if needs_int_conversion {
+        code.push_str("    int_buffer: times 16 db 0  ;; Buffer for integer/float string conversion\n");
+    }
+    
+    // Process string literals from print statements
+    for (i, node) in nodes.iter().enumerate() {
+        if let ASTNode::Print { expr, to_stderr: _ } = node {
+            if let Some(Expression::Literal(text)) = expr {
+                let label = format!("str_{}", i);
+                let clean_str = text.trim_matches('"');
+                code.push_str(&format!("    {}: db \"{}\", 0\n", label, clean_str));
+                code.push_str(&format!("    {}_len: equ $ - {} - 1\n", label, label));
+                string_literals.push((label, clean_str.to_string()));
+            }
+        }
+    }
+    
+    // BSS section for uninitialized data
+    code.push_str("\nsection .bss\n");
+    // You can add more uninitialized variables here if needed
+    
+    // Text section for code
+    code.push_str("\nsection .text\n");
+    code.push_str("    global _start\n\n");
+    
+    // Initialize program with clean registers
+    generate_program_init(&mut code);
+    
+    // Process each node in the AST to generate code
+    for (i, node) in nodes.iter().enumerate() {
+        match node {
+            ASTNode::VarDeclaration { .. } => {
+                // Already handled in data section
+            },
+            
+            ASTNode::Input { name } => {
+                // Read user input
+                code.push_str("    ;; Read user input\n");
+                code.push_str("    mov rax, 0          ;; syscall: read\n");
+                code.push_str("    mov rdi, 0          ;; file descriptor: stdin\n");
+                code.push_str("    mov rsi, input_buffer ;; buffer\n");
+                code.push_str("    mov rdx, 255        ;; max bytes to read\n");
+                code.push_str("    syscall\n\n");
+                
+                // Remove newline if present
+                code.push_str("    ;; Remove newline character if present\n");
+                code.push_str("    dec rax             ;; position of potential newline\n");
+                code.push_str("    mov byte [input_buffer + rax], 0 ;; replace with null terminator\n\n");
+                
+                // Copy to destination variable if it's a string
+                if let Some((VarType::String, _)) = var_map.get(name) {
+                    code.push_str(&format!("    ;; Copy input to {} (string variable)\n", name));
+                    code.push_str("    mov rcx, 0          ;; Initialize counter\n");
+                    code.push_str(&format!(".copy_loop_{}:\n", i));
+                    code.push_str("    mov al, [input_buffer + rcx] ;; Get character from buffer\n");
+                    code.push_str(&format!("    mov [{}+rcx], al  ;; Store in destination\n", name));
+                    code.push_str("    inc rcx             ;; Increment counter\n");
+                    code.push_str("    test al, al         ;; Check if null terminator\n");
+                    code.push_str(&format!("    jnz .copy_loop_{}\n\n", i));
+                } else if let Some((VarType::Int, _)) = var_map.get(name) {
+                    // Convert string to integer
+                    code.push_str(&format!("    ;; Convert input to integer for {}\n", name));
+                    // This is a simplified conversion that only supports positive integers
+                    code.push_str("    mov rcx, 0          ;; Initialize value\n");
+                    code.push_str("    mov rsi, 0          ;; Initialize index\n");
+                    code.push_str(&format!(".atoi_loop_{}:\n", i));
+                    code.push_str("    mov al, [input_buffer + rsi] ;; Get character\n");
+                    code.push_str("    test al, al         ;; Check if null terminator\n");
+                    code.push_str(&format!("    jz .atoi_done_{}\n", i));
+                    code.push_str("    sub al, '0'         ;; Convert ASCII to digit\n");
+                    code.push_str("    imul rcx, 10        ;; Multiply by 10\n");
+                    code.push_str("    add rcx, rax        ;; Add digit\n");
+                    code.push_str("    inc rsi             ;; Increment index\n");
+                    code.push_str(&format!("    jmp .atoi_loop_{}\n", i));
+                    code.push_str(&format!(".atoi_done_{}:\n", i));
+                    code.push_str(&format!("    mov dword [{}], ecx ;; Store result\n\n", name));
+                }
+            },
+            
+            ASTNode::Print { to_stderr, expr } => {
+                let _fd = if *to_stderr { "2" } else { "1" };
+                
+                match expr {
+                    Some(Expression::Literal(text)) => {
+                        let label = format!("str_{}", i);
+                        
+                        // Process string for variable interpolation
+                        let mut processed_text = String::new();
+                        let mut var_refs = Vec::new();
+                        let mut current_pos = 0;
+                        
+                        // Clean the string literal (remove quotes if present)
+                        let clean_text = text.trim_matches('"');
+                        
+                        // Find all variable references in the format {var_name}
+                        while let Some(start_idx) = clean_text[current_pos..].find('{') {
+                            let abs_start = current_pos + start_idx;
+                            
+                            // Add the text before the variable reference
+                            processed_text.push_str(&clean_text[current_pos..abs_start]);
+                            
+                            // Find the closing brace
+                            if let Some(end_idx) = clean_text[abs_start+1..].find('}') {
+                                let abs_end = abs_start + 1 + end_idx;
+                                let var_name = &clean_text[abs_start+1..abs_end];
+                                
+                                // Add a placeholder for the variable
+                                processed_text.push_str(&format!("%{}%", var_name));
+                                
+                                // Store the variable reference for later use
+                                var_refs.push(var_name.to_string());
+                                
+                                // Update current position
+                                current_pos = abs_end + 1;
+                            } else {
+                                // No closing brace found, treat as literal
+                                processed_text.push('{');
+                                current_pos = abs_start + 1;
+                            }
+                        }
+                        
+                        // Add any remaining text
+                        processed_text.push_str(&clean_text[current_pos..]);
+                        
+                        // If we have variable references, we need to generate more complex code
+                        if var_refs.is_empty() {
+                            // Simple case: no variable interpolation
+                            code.push_str("    ;; Print string literal\n");
+                            code.push_str("    mov rax, 1          ;; syscall: write\n");
+                            let fd_str = if *to_stderr { 
+                                format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                            } else { 
+                                format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                            };
+                            code.push_str(&fd_str);
+                            
+                            // Add string to data section if not already there
+                            code.push_str(&format!("    mov rsi, {}         ;; message address\n", label));
+                            code.push_str(&format!("    mov rdx, {}_len     ;; message length\n", label));
+                            code.push_str("    syscall\n\n");
+                            
+                            // Add string to data section
+                            string_literals.push((label, processed_text));
+                        } else {
+                            // Complex case: handle variable interpolation
+                            // Split the string into parts based on variable references
+                            let parts: Vec<&str> = processed_text.split(|c| c == '%').collect();
+                            let mut segment_idx = 0;
+                            
+                            for (idx, part) in parts.iter().enumerate() {
+                                if idx % 2 == 0 {
+                                    // Even indices are string literals
+                                    if !part.is_empty() {
+                                        let part_label = format!("{}_part{}", label, segment_idx);
+                                        segment_idx += 1;
+                                        
+                                        // Add string to data section for later
+                                        string_literals.push((part_label.clone(), part.to_string()));
+                                        
+                                        // Print the string part
+                                        code.push_str(&format!("    ;; Print string segment\n"));
+                                        code.push_str("    mov rax, 1          ;; syscall: write\n");
+                                        let fd_str = if *to_stderr { 
+                                            format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                                        } else { 
+                                            format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                                        };
+                                        code.push_str(&fd_str);
+                                        code.push_str(&format!("    mov rsi, {}         ;; segment address\n", part_label));
+                                        code.push_str(&format!("    mov rdx, {}_len     ;; segment length\n", part_label));
+                                        code.push_str("    syscall\n\n");
+                                    }
+                                } else {
+                                    // Odd indices are variable names
+                                    let var_name = part;
+                                    
+                                    // Print the variable based on its type
+                                    if let Some((var_type, _)) = var_map.get(var_name) {
+                                        match var_type {
+                                            VarType::String => {
+                                                code.push_str(&format!("    ;; Print string variable {}\n", var_name));
+                                                code.push_str("    mov rax, 1          ;; syscall: write\n");
+                                                let fd_str = if *to_stderr { 
+                                                    format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                                                } else { 
+                                                    format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                                                };
+                                                code.push_str(&fd_str);
+                                                code.push_str(&format!("    mov rsi, {}         ;; string address\n", var_name));
+                                                code.push_str(&format!("    mov rdx, {}_len     ;; string length\n", var_name));
+                                                code.push_str("    syscall\n\n");
+                                            },
+                                            VarType::Int => {
+                                                code.push_str(&format!("    ;; Print integer variable {}\n", var_name));
+                                                code.push_str(&format!("    mov eax, [{}]       ;; Load integer value\n", var_name));
+                                                code.push_str("    mov rsi, int_buffer+15 ;; Point to end of buffer\n");
+                                                code.push_str("    mov byte [rsi], 0     ;; Null terminator\n");
+                                                code.push_str("    dec rsi               ;; Move to position for last digit\n");
+                                                code.push_str("    mov rbx, 10           ;; Divisor\n");
+                                                
+                                                // Start of the conversion loop
+                                                code.push_str("    mov rcx, 0            ;; Digit counter\n");
+                                                code.push_str(&format!("    .int_to_str_loop_{}:\n", segment_idx));
+                                                code.push_str("        xor rdx, rdx      ;; Clear rdx for division\n");
+                                                code.push_str("        div rbx            ;; Divide rax by 10, remainder in rdx\n");
+                                                code.push_str("        add dl, '0'        ;; Convert remainder to ASCII\n");
+                                                code.push_str("        mov [rsi], dl      ;; Store digit\n");
+                                                code.push_str("        dec rsi            ;; Move position\n");
+                                                code.push_str("        inc rcx            ;; Increment counter\n");
+                                                code.push_str("        test rax, rax      ;; Check if rax is zero\n");
+                                                code.push_str(&format!("        jnz .int_to_str_loop_{} ;; Continue if not zero\n", segment_idx));
+                                                
+                                                // Set up for printing the string
+                                                code.push_str("    inc rsi               ;; Point to the first digit\n");
+                                                code.push_str("    mov rax, 1            ;; syscall: write\n");
+                                                let fd_str = if *to_stderr { 
+                                                    format!("    mov rdi, 2           ;; file descriptor: stderr\n") 
+                                                } else { 
+                                                    format!("    mov rdi, 1           ;; file descriptor: stdout\n") 
+                                                };
+                                                code.push_str(&fd_str);
+                                                code.push_str("    ;; rsi already points to the first digit\n");
+                                                code.push_str("    mov rdx, rcx          ;; Number of digits to print\n");
+                                                code.push_str("    syscall\n\n");
+                                                
+                                                segment_idx += 1;
+                                            },
+                                            VarType::Float => {
+                                                code.push_str(&format!("    ;; Print float variable {}\n", var_name));
+                                                code.push_str(&format!("    fld dword [{}]     ;; Load float to FPU stack\n", var_name));
+                                                code.push_str("    sub rsp, 8            ;; Allocate space for integer result\n");
+                                                code.push_str("    fistp qword [rsp]     ;; Store as integer and pop\n");
+                                                code.push_str("    pop rax               ;; Get the integer into rax\n");
+                                                
+                                                // Now use the same integer-to-string conversion
+                                                code.push_str("    mov rsi, int_buffer+15 ;; Point to end of buffer\n");
+                                                code.push_str("    mov byte [rsi], 0     ;; Null terminator\n");
+                                                code.push_str("    dec rsi               ;; Move to the position for last digit\n");
+                                                code.push_str("    mov rbx, 10           ;; Divisor\n");
+                                                
+                                                // Start of the conversion loop
+                                                code.push_str("    mov rcx, 0            ;; Digit counter\n");
+                                                code.push_str(&format!("    .float_to_str_loop_{}:\n", segment_idx));
+                                                code.push_str("        xor rdx, rdx      ;; Clear rdx for division\n");
+                                                code.push_str("        div rbx            ;; Divide rax by 10, remainder in rdx\n");
+                                                code.push_str("        add dl, '0'        ;; Convert remainder to ASCII\n");
+                                                code.push_str("        mov [rsi], dl      ;; Store digit\n");
+                                                code.push_str("        dec rsi            ;; Move position\n");
+                                                code.push_str("        inc rcx            ;; Increment counter\n");
+                                                code.push_str("        test rax, rax      ;; Check if rax is zero\n");
+                                                code.push_str(&format!("        jnz .float_to_str_loop_{} ;; Continue if not zero\n", segment_idx));
+                                                
+                                                // Set up for printing the string
+                                                code.push_str("    inc rsi               ;; Point to the first digit\n");
+                                                code.push_str("    mov rax, 1            ;; syscall: write\n");
+                                                let fd_str = if *to_stderr { 
+                                                    format!("    mov rdi, 2           ;; file descriptor: stderr\n") 
+                                                } else { 
+                                                    format!("    mov rdi, 1           ;; file descriptor: stdout\n") 
+                                                };
+                                                code.push_str(&fd_str);
+                                                code.push_str("    ;; rsi already points to the first digit\n");
+                                                code.push_str("    mov rdx, rcx          ;; Number of digits to print\n");
+                                                code.push_str("    syscall\n\n");
+                                                
+                                                segment_idx += 1;
+                                            },
+                                            VarType::Char { .. } => {
+                                                code.push_str(&format!("    ;; Print char variable {}\n", var_name));
+                                                code.push_str("    mov rax, 1          ;; syscall: write\n");
+                                                let fd_str = if *to_stderr { 
+                                                    format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                                                } else { 
+                                                    format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                                                };
+                                                code.push_str(&fd_str);
+                                                code.push_str(&format!("    mov rsi, {}         ;; char address\n", var_name));
+                                                code.push_str("    mov rdx, 1          ;; length (single char)\n");
+                                                code.push_str("    syscall\n\n");
+                                            }
+                                        }
+                                    } else {
+                                        // Variable not found, print {var_name} as fallback
+                                        let part_label = format!("{}_missing{}", label, segment_idx);
+                                        segment_idx += 1;
+                                        
+                                        // Add to data section
+                                        let missing_var_text = format!("{{{}}}", var_name);
+                                        string_literals.push((part_label.clone(), missing_var_text));
+                                        
+                                        code.push_str(&format!("    ;; Print missing variable reference\n"));
+                                        code.push_str("    mov rax, 1          ;; syscall: write\n");
+                                        let fd_str = if *to_stderr { 
+                                            format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                                        } else { 
+                                            format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                                        };
+                                        code.push_str(&fd_str);
+                                        code.push_str(&format!("    mov rsi, {}         ;; segment address\n", part_label));
+                                        code.push_str(&format!("    mov rdx, {}_len     ;; segment length\n", part_label));
+                                        code.push_str("    syscall\n\n");
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Some(Expression::Identifier(var_name)) => {
+                        code.push_str(&format!("    ;; Print variable {}\n", var_name));
+                        if let Some((var_type, _)) = var_map.get(var_name.as_str()) {
+                            match var_type {
+                                VarType::String => {
+                                    code.push_str("    mov rax, 1          ;; syscall: write\n");
+                                    let fd_str = if *to_stderr { 
+                                        format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                                    } else { 
+                                        format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                                    };
+                                    code.push_str(&fd_str);
+                                    code.push_str(&format!("    mov rsi, {}         ;; string address\n", var_name));
+                                    code.push_str(&format!("    mov rdx, {}_len     ;; string length\n", var_name));
+                                    code.push_str("    syscall\n\n");
+                                },
+                                VarType::Int => {
+                                    // Implement integer to string conversion for printing
+                                    code.push_str("    ;; Convert integer to string for printing\n");
+                                    code.push_str(&format!("    mov eax, [{}]       ;; Load integer value\n", var_name));
+                                    code.push_str("    mov rsi, int_buffer+15 ;; Point to end of buffer\n");
+                                    code.push_str("    mov byte [rsi], 0     ;; Null terminator\n");
+                                    code.push_str("    dec rsi               ;; Move to the position for last digit\n");
+                                    code.push_str("    mov rbx, 10           ;; Divisor\n");
+                                    
+                                    // Start of the conversion loop
+                                    code.push_str("    mov rcx, 0            ;; Digit counter\n");
+                                    code.push_str("    .int_to_str_loop:\n");
+                                    code.push_str("        xor rdx, rdx      ;; Clear rdx for division\n");
+                                    code.push_str("        div rbx            ;; Divide rax by 10, remainder in rdx\n");
+                                    code.push_str("        add dl, '0'        ;; Convert remainder to ASCII\n");
+                                    code.push_str("        mov [rsi], dl      ;; Store digit\n");
+                                    code.push_str("        dec rsi            ;; Move position\n");
+                                    code.push_str("        inc rcx            ;; Increment counter\n");
+                                    code.push_str("        test rax, rax      ;; Check if rax is zero\n");
+                                    code.push_str("        jnz .int_to_str_loop ;; Continue if not zero\n");
+                                    
+                                    // Set up for printing the string
+                                    code.push_str("    inc rsi               ;; Point to the first digit\n");
+                                    code.push_str("    mov rax, 1            ;; syscall: write\n");
+                                    let fd_str = if *to_stderr { 
+                                        format!("    mov rdi, 2           ;; file descriptor: stderr\n") 
+                                    } else { 
+                                        format!("    mov rdi, 1           ;; file descriptor: stdout\n") 
+                                    };
+                                    code.push_str(&fd_str);
+                                    code.push_str("    ;; rsi already points to the first digit\n");
+                                    code.push_str("    mov rdx, rcx          ;; Number of digits to print\n");
+                                    code.push_str("    syscall\n\n");
+                                },
+                                VarType::Float => {
+                                    // Float printing requires FPU operations
+                                    code.push_str("    ;; Convert float to string for printing (simplified)\n");
+                                    code.push_str(&format!("    fld dword [{}]     ;; Load float to FPU stack\n", var_name));
+                                    code.push_str("    sub rsp, 8            ;; Allocate space for integer result\n");
+                                    code.push_str("    fistp qword [rsp]     ;; Store as integer and pop\n");
+                                    code.push_str("    pop rax               ;; Get the integer into rax\n");
+                                    
+                                    // Now use the same integer-to-string conversion
+                                    code.push_str("    mov rsi, int_buffer+15 ;; Point to end of buffer\n");
+                                    code.push_str("    mov byte [rsi], 0     ;; Null terminator\n");
+                                    code.push_str("    dec rsi               ;; Move to the position for last digit\n");
+                                    code.push_str("    mov rbx, 10           ;; Divisor\n");
+                                    
+                                    // Start of the conversion loop
+                                    code.push_str("    mov rcx, 0            ;; Digit counter\n");
+                                    code.push_str("    .float_to_str_loop:\n");
+                                    code.push_str("        xor rdx, rdx      ;; Clear rdx for division\n");
+                                    code.push_str("        div rbx            ;; Divide rax by 10, remainder in rdx\n");
+                                    code.push_str("        add dl, '0'        ;; Convert remainder to ASCII\n");
+                                    code.push_str("        mov [rsi], dl      ;; Store digit\n");
+                                    code.push_str("        dec rsi            ;; Move position\n");
+                                    code.push_str("        inc rcx            ;; Increment counter\n");
+                                    code.push_str("        test rax, rax      ;; Check if rax is zero\n");
+                                    code.push_str("        jnz .float_to_str_loop ;; Continue if not zero\n");
+                                    
+                                    // Set up for printing the string
+                                    code.push_str("    inc rsi               ;; Point to the first digit\n");
+                                    code.push_str("    mov rax, 1            ;; syscall: write\n");
+                                    let fd_str = if *to_stderr { 
+                                        format!("    mov rdi, 2           ;; file descriptor: stderr\n") 
+                                    } else { 
+                                        format!("    mov rdi, 1           ;; file descriptor: stdout\n") 
+                                    };
+                                    code.push_str(&fd_str);
+                                    code.push_str("    ;; rsi already points to the first digit\n");
+                                    code.push_str("    mov rdx, rcx          ;; Number of digits to print\n");
+                                    code.push_str("    syscall\n\n");
+                                },
+                                VarType::Char { .. } => {
+                                    // For char printing
+                                    code.push_str("    ;; Note: Char printing is simplified in this version\n");
+                                    code.push_str(&format!("    mov rsi, {}         ;; char address\n", var_name));
+                                    code.push_str("    mov rax, 1          ;; syscall: write\n");
+                                    let fd_str = if *to_stderr { 
+                                        format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                                    } else { 
+                                        format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                                    };
+                                    code.push_str(&fd_str);
+                                    code.push_str("    mov rdx, 1          ;; length (single char)\n");
+                                    code.push_str("    syscall\n\n");
+                                }
+                            }
+                        },
+                    },
+                    _ => {
+                        // Complex expressions would require evaluation
+                    }
+                }
+                
+                // Print newline after content
+                code.push_str("    ;; Print newline\n");
+                code.push_str("    mov rax, 1          ;; syscall: write\n");
+                let fd_str = if *to_stderr { 
+                    format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                } else { 
+                    format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                };
+                code.push_str(&fd_str);
+                code.push_str("    mov rsi, newline     ;; newline address\n");
+                code.push_str("    mov rdx, 1           ;; length\n");
+                code.push_str("    syscall\n\n");
+            },
+            
+            ASTNode::MathOp { name, operator, operand } => {
+                code.push_str(&format!("    ;; Math operation on {}\n", name));
+                code.push_str(&format!("    mov eax, [{}]       ;; Load variable\n", name));
+                
+                match operand {
+                    Expression::Literal(val) => {
+                        let operand_val = val.parse::<i32>().unwrap_or(0);
+                        match operator {
+                            MathOperator::Add => {
+                                code.push_str(&format!("    add eax, {}         ;; Add value\n", operand_val));
+                            },
+                            MathOperator::Subtract => {
+                                code.push_str(&format!("    sub eax, {}         ;; Subtract value\n", operand_val));
+                            },
+                            MathOperator::Multiply => {
+                                code.push_str(&format!("    imul eax, {}        ;; Multiply by value\n", operand_val));
+                            },
+                            MathOperator::Divide => {
+                                code.push_str(&format!("    mov ecx, {}         ;; Divisor\n", operand_val));
+                                code.push_str("    cdq                  ;; Sign-extend eax to edx:eax\n");
+                                code.push_str("    idiv ecx             ;; Divide edx:eax by ecx\n");
+                            },
+                        }
+                    },
+                    Expression::Identifier(var_name) => {
+                        code.push_str(&format!("    mov ecx, [{}]       ;; Load second variable\n", var_name));
+                        match operator {
+                            MathOperator::Add => {
+                                code.push_str("    add eax, ecx         ;; Add variables\n");
+                            },
+                            MathOperator::Subtract => {
+                                code.push_str("    sub eax, ecx         ;; Subtract variables\n");
+                            },
+                            MathOperator::Multiply => {
+                                code.push_str("    imul eax, ecx        ;; Multiply variables\n");
+                            },
+                            MathOperator::Divide => {
+                                code.push_str("    cdq                  ;; Sign-extend eax to edx:eax\n");
+                                code.push_str("    idiv ecx             ;; Divide edx:eax by ecx\n");
+                            },
+                        }
+                    },
+                    _ => {
+                        // Complex expressions would require evaluation
+                    }
+                }
+                
+                code.push_str(&format!("    mov [{}], eax       ;; Store result\n\n", name));
+            },
+            
+            ASTNode::If { condition, body } => {
+                label_count += 1;
+                let end_label = format!(".if_end_{}", label_count);
+                
+                code.push_str("    ;; If condition\n");
+                generate_condition_code(condition, &mut code, &end_label, &var_map, label_count);
+                
+                // Generate code for the body
+                for body_node in body {
+                    match body_node {
+                        ASTNode::Print { to_stderr, expr } => {
+                            let _fd = if *to_stderr { "2" } else { "1" };
+                            
+                            match expr {
+                                Some(Expression::Literal(text)) => {
+                                    // Generate a unique label for this string
+                                    let _str_label = format!("if_str_{}", label_count);
+                                    // The string should have been added to the data section already
+                                    code.push_str("    ;; Print string in if block\n");
+                                    code.push_str("    mov rax, 1          ;; syscall: write\n");
+                                    let fd_str = if *to_stderr { 
+                                        format!("    mov rdi, 2         ;; file descriptor: stderr\n") 
+                                    } else { 
+                                        format!("    mov rdi, 1         ;; file descriptor: stdout\n") 
+                                    };
+                                    code.push_str(&fd_str);
+                                    
+                                    // Use string concatenation instead of format
+                                    let mut str_addr = String::from("    mov rsi, str_");
+                                    str_addr.push_str(&i.to_string());
+                                    str_addr.push_str("     ;; message address\n");
+                                    code.push_str(&str_addr);
+                                    
+                                    let mut len_str = String::from("    mov rdx, str_");
+                                    len_str.push_str(&i.to_string());
+                                    len_str.push_str("_len ;; message length\n");
+                                    code.push_str(&len_str);
+                                    
+                                    code.push_str("    syscall\n\n");
+                                },
+                                Some(Expression::Identifier(var_name)) => {
+                                    // Similar to the print outside of if
+                                    // But simplified for brevity
+                                },
+                                _ => {}
+                            }
+                        },
+                        // Handle other node types in the if body
+                        _ => {}
+                    }
+                }
+                
+                code.push_str(&format!("{}:\n", end_label));
+            },
+        }
+    }
+    
+    // Exit program
+    code.push_str("    ;; Exit program\n");
+    code.push_str("    mov rax, 60         ;; syscall: exit\n");
+    code.push_str("    mov rdi, 0          ;; exit code 0\n");
+    code.push_str("    syscall\n");
+    
+    code
+}
+
+// Generate assembly code for condition evaluation
+fn generate_condition_code(
+    condition: &Expression, 
+    code: &mut String,
+    end_label: &str,
+    var_map: &HashMap<String, (VarType, u32)>,
+    label_id: u32
+) {
+    match condition {
+        Expression::BinaryOp { left, operator, right } => {
+            match (left.as_ref(), right.as_ref()) {
+                (Expression::Identifier(left_var), Expression::Identifier(right_var)) => {
+                    // Compare two variables
+                    code.push_str(&format!("    mov eax, [{}]       ;; Load left variable\n", left_var));
+                    code.push_str(&format!("    mov ecx, [{}]       ;; Load right variable\n", right_var));
+                    code.push_str("    cmp eax, ecx         ;; Compare values\n");
+                    
+                    match operator {
+                        ComparisonOperator::Equal => {
+                            code.push_str(&format!("    jne {}           ;; Jump if not equal\n", end_label));
+                        },
+                        ComparisonOperator::NotEqual => {
+                            code.push_str(&format!("    je {}            ;; Jump if equal\n", end_label));
+                        },
+                        ComparisonOperator::LessThan => {
+                            code.push_str(&format!("    jge {}           ;; Jump if greater or equal\n", end_label));
+                        },
+                        ComparisonOperator::LessThanEqual => {
+                            code.push_str(&format!("    jg {}            ;; Jump if greater\n", end_label));
+                        },
+                        ComparisonOperator::GreaterThan => {
+                            code.push_str(&format!("    jle {}           ;; Jump if less or equal\n", end_label));
+                        },
+                        ComparisonOperator::GreaterThanEqual => {
+                            code.push_str(&format!("    jl {}            ;; Jump if less\n", end_label));
+                        },
+                    }
+                },
+                (Expression::Identifier(left_var), Expression::Literal(right_val)) => {
+                    // Compare variable with literal
+                    let right_int = right_val.parse::<i32>().unwrap_or(0);
+                    code.push_str(&format!("    mov eax, [{}]       ;; Load variable\n", left_var));
+                    code.push_str(&format!("    cmp eax, {}         ;; Compare with literal\n", right_int));
+                    
+                    match operator {
+                        ComparisonOperator::Equal => {
+                            code.push_str(&format!("    jne {}           ;; Jump if not equal\n", end_label));
+                        },
+                        ComparisonOperator::NotEqual => {
+                            code.push_str(&format!("    je {}            ;; Jump if equal\n", end_label));
+                        },
+                        ComparisonOperator::LessThan => {
+                            code.push_str(&format!("    jge {}           ;; Jump if greater or equal\n", end_label));
+                        },
+                        ComparisonOperator::LessThanEqual => {
+                            code.push_str(&format!("    jg {}            ;; Jump if greater\n", end_label));
+                        },
+                        ComparisonOperator::GreaterThan => {
+                            code.push_str(&format!("    jle {}           ;; Jump if less or equal\n", end_label));
+                        },
+                        ComparisonOperator::GreaterThanEqual => {
+                            code.push_str(&format!("    jl {}            ;; Jump if less\n", end_label));
+                        },
+                    }
+                },
+                (Expression::Literal(left_val), Expression::Identifier(right_var)) => {
+                    // Compare literal with variable
+                    let left_int = left_val.parse::<i32>().unwrap_or(0);
+                    code.push_str(&format!("    mov eax, {}         ;; Load literal\n", left_int));
+                    code.push_str(&format!("    cmp eax, [{}]       ;; Compare with variable\n", right_var));
+                    
+                    match operator {
+                        ComparisonOperator::Equal => {
+                            code.push_str(&format!("    jne {}           ;; Jump if not equal\n", end_label));
+                        },
+                        ComparisonOperator::NotEqual => {
+                            code.push_str(&format!("    je {}            ;; Jump if equal\n", end_label));
+                        },
+                        ComparisonOperator::LessThan => {
+                            code.push_str(&format!("    jge {}           ;; Jump if greater or equal\n", end_label));
+                        },
+                        ComparisonOperator::LessThanEqual => {
+                            code.push_str(&format!("    jg {}            ;; Jump if greater\n", end_label));
+                        },
+                        ComparisonOperator::GreaterThan => {
+                            code.push_str(&format!("    jle {}           ;; Jump if less or equal\n", end_label));
+                        },
+                        ComparisonOperator::GreaterThanEqual => {
+                            code.push_str(&format!("    jl {}            ;; Jump if less\n", end_label));
+                        },
+                    }
+                },
+                _ => {
+                    // For complex expressions in conditions
+                    // Would need more complex evaluation
+                }
+            }
+        },
+        Expression::LogicalOp { left, operator, right } => {
+            // For logical operations (AND, OR), we need to evaluate both sides
+            match operator {
+                LogicalOperator::And => {
+                    // For AND, if left side is false, jump to end
+                    generate_condition_code(left, code, end_label, var_map, label_id);
+                    // If we get here, left side is true, so evaluate right side
+                    generate_condition_code(right, code, end_label, var_map, label_id);
+                },
+                LogicalOperator::Or => {
+                    // For OR, if left side is true, continue, otherwise evaluate right side
+                    let or_right_label = format!(".or_right_{}", label_id);
+                    let or_end_label = format!(".or_end_{}", label_id);
+                    
+                    // Create a temporary label for the first condition evaluation
+                    let temp_end_label = or_right_label.clone();
+                    
+                    // Evaluate left side, if false (jumps to or_right), evaluate right side
+                    generate_condition_code(left, code, &temp_end_label, var_map, label_id);
+                    
+                    // If left side is true, we don't need to check right side, skip to end
+                    code.push_str(&format!("    jmp {}             ;; Left side is true, skip right evaluation\n", or_end_label));
+                    
+                    // If left side is false, check right side
+                    code.push_str(&format!("{}:\n", or_right_label));
+                    generate_condition_code(right, code, end_label, var_map, label_id + 1);
+                    
+                    // End of OR evaluation
+                    code.push_str(&format!("{}:\n", or_end_label));
+                }
+            }
+        },
+        Expression::Identifier(var_name) => {
+            // For single variable conditions (truthy check)
+            code.push_str(&format!("    ;; Check if {} is non-zero (truthy)\n", var_name));
+            code.push_str(&format!("    mov eax, [{}]       ;; Load variable\n", var_name));
+            code.push_str("    test eax, eax        ;; Test if zero\n");
+            code.push_str(&format!("    jz {}              ;; Jump to end if zero (false)\n", end_label));
+        },
+        Expression::Literal(val) => {
+            // For literal conditions (truthy check)
+            if let Ok(int_val) = val.parse::<i32>() {
+                if int_val == 0 {
+                    // Always false
+                    code.push_str(&format!("    jmp {}              ;; Literal is 0 (always false)\n", end_label));
+                } else {
+                    // Always true, no need to jump
+                    code.push_str("    ;; Literal is non-zero (always true)\n");
+                }
+            } else {
+                // String/other literals - considered truthy if non-empty
+                code.push_str("    ;; Literal condition (simplified)\n");
+            }
+        }
+    }
+}

@@ -1,0 +1,24 @@
+; Test file for string interpolation
+
+; Define some variables
+@ name str "Alice"
+@ age i 30
+@ price f 19.99
+
+; Basic interpolation
+>> "Hello, {name}!"
+
+; Multiple variables in one string
+>> "User {name} is {age} years old"
+
+; Numeric value interpolation
+>> "The item costs ${price}"
+
+; Escaped braces
+>> "To use a variable, write \\{variableName\\}"
+
+; Complex example
+>> "Summary: {name}, age {age}, ordered product for ${price}"
+
+; Test undefined variable
+>> "This will show: {undefinedVar}" 

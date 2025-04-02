@@ -27,6 +27,8 @@ pub fn transpile_rs(ast: &AST) -> String {
                         let value_str = match value {
                             Some(Expression::Literal(val)) => format!(" = {}", val),
                             Some(Expression::Identifier(val)) => format!(" = {}", val),
+                            Some(Expression::BinaryOp { .. }) => String::new(),
+                            Some(Expression::LogicalOp { .. }) => String::new(),
                             None => String::new(),
                         };
                         code.push_str(&format!(
@@ -41,19 +43,21 @@ pub fn transpile_rs(ast: &AST) -> String {
                         ));
                     }
                     ASTNode::Print { to_stderr, expr } => {
-                        let output_target = if *to_stderr { "std::io::stderr().lock()" } else { "std::io::stdout().lock()" };
+                        let output_target = if *to_stderr {
+                            "std::io::stderr().lock()"
+                        } else {
+                            "std::io::stdout().lock()"
+                        };
 
                         if let Some(Expression::Literal(val)) = expr {
                             code.push_str(&format!(
                                 "    writeln!(&mut {}, \"{}\").unwrap();\n",
-                                output_target,
-                                val
+                                output_target, val
                             ));
                         } else if let Some(Expression::Identifier(val)) = expr {
                             code.push_str(&format!(
                                 "    writeln!(&mut {}, \"{{}}\", {}).unwrap();\n",
-                                output_target,
-                                val
+                                output_target, val
                             ));
                         } else {
                             code.push_str(&format!(
@@ -62,7 +66,11 @@ pub fn transpile_rs(ast: &AST) -> String {
                             ));
                         }
                     }
-                    ASTNode::MathOp { name, operator, operand } => {
+                    ASTNode::MathOp {
+                        name,
+                        operator,
+                        operand,
+                    } => {
                         let op = match operator {
                             MathOperator::Add => "+",
                             MathOperator::Subtract => "-",
@@ -72,12 +80,57 @@ pub fn transpile_rs(ast: &AST) -> String {
                         let operand_str = match operand {
                             Expression::Literal(val) => val.clone(),
                             Expression::Identifier(val) => val.clone(),
+                            Expression::BinaryOp { left, operator, right } => {
+                                let left_str = match **left {
+                                    Expression::Literal(ref l) => l.clone(),
+                                    Expression::Identifier(ref l) => l.clone(),
+                                    _ => "".to_string(),
+                                };
+                                
+                                let right_str = match **right {
+                                    Expression::Literal(ref r) => r.clone(),
+                                    Expression::Identifier(ref r) => r.clone(),
+                                    _ => "".to_string(),
+                                };
+                                
+                                let op_str = match operator {
+                                    crate::parse::ComparisonOperator::Equal => "==",
+                                    crate::parse::ComparisonOperator::NotEqual => "!=",
+                                    crate::parse::ComparisonOperator::LessThan => "<",
+                                    crate::parse::ComparisonOperator::LessThanEqual => "<=",
+                                    crate::parse::ComparisonOperator::GreaterThan => ">",
+                                    crate::parse::ComparisonOperator::GreaterThanEqual => ">=",
+                                };
+                                
+                                format!("({} {} {})", left_str, op_str, right_str)
+                            },
+                            Expression::LogicalOp { left, operator, right } => {
+                                let left_str = match **left {
+                                    Expression::Literal(ref l) => l.clone(),
+                                    Expression::Identifier(ref l) => l.clone(),
+                                    _ => "".to_string(),
+                                };
+                                
+                                let right_str = match **right {
+                                    Expression::Literal(ref r) => r.clone(),
+                                    Expression::Identifier(ref r) => r.clone(),
+                                    _ => "".to_string(),
+                                };
+                                
+                                let op_str = match operator {
+                                    crate::parse::LogicalOperator::And => "&&",
+                                    crate::parse::LogicalOperator::Or => "||",
+                                };
+                                
+                                format!("({} {} {})", left_str, op_str, right_str)
+                            },
                         };
                         code.push_str(&format!(
                             "    {} = {} {} {};\n",
                             name, name, op, operand_str
                         ));
                     }
+                    _ => {}
                 }
             }
         }

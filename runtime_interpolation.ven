@@ -1,0 +1,32 @@
+; Test file for runtime string interpolation
+
+; Define a mutable variable
+@@ counter i 0
+
+; Print initial value
+>> "Initial counter value: {counter}"
+
+; Modify the counter
+* counter + 1
+
+; Print after modification
+>> "Counter after +1: {counter}"
+
+; Modify again
+* counter + 5
+
+; Print after second modification
+>> "Counter after +5 more: {counter}"
+
+; Prompt for user input and read input
+>> "Enter a number to add to counter: "
+.. counter
+
+; Print after user input
+>> "Counter after your input: {counter}"
+
+; Perform a calculation
+* counter * 2
+
+; Print final value
+>> "Final counter value (doubled): {counter}" 

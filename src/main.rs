@@ -1,27 +1,29 @@
 use std::env;
 use std::fs;
-use std::process::exit;
 use std::path::Path;
+use std::process::exit;
 use std::time::{Duration, Instant};
 
+use errmsgs::print_errors;
 use optimisers::pass1::optimize_pass1;
 use optimisers::pass2::pass2;
 use parse::AST;
-use token::Tokenizer;
-use errmsgs::print_errors;
+use token::{Tokenizer, TokenKind};
 use transpilers::C::transpile_c;
 use transpilers::LLVM::transpile_llvm;
 use transpilers::LX8664::transpile_lx8664;
 use transpilers::RST::transpile_rs;
 
-pub mod errs;
-pub mod parse;
-pub mod token;
-pub mod var_checker;
 pub mod errmsgs;
+pub mod errs;
+pub mod impl_parserstate;
 pub mod optimisers;
+pub mod parse;
 pub mod parse1;
+pub mod parse2;
+pub mod token;
 pub mod transpilers;
+pub mod var_checker;
 
 /// Formats a Duration into a human-readable string using µs, ms, s, or min.
 fn format_duration(duration: Duration) -> String {
@@ -76,7 +78,11 @@ fn main() {
         } else if arg.starts_with("--in=") {
             input_file = Some(arg.trim_start_matches("--in=").to_string());
         } else if arg.starts_with("-t=") || arg.starts_with("--target=") {
-            target = Some(arg.trim_start_matches("-t=").trim_start_matches("--target=").to_string());
+            target = Some(
+                arg.trim_start_matches("-t=")
+                    .trim_start_matches("--target=")
+                    .to_string(),
+            );
         } else if arg == "--show-msgs" || arg == "-sm" {
             show_msgs = true;
         }
@@ -85,7 +91,9 @@ fn main() {
     let input_path = match input_file {
         Some(path) if path.ends_with(".ven") => path,
         _ => {
-            eprintln!("Error: Input file must be specified with --in=<file_path.ven> and end with .ven");
+            eprintln!(
+                "Error: Input file must be specified with --in=<file_path.ven> and end with .ven"
+            );
             exit(1);
         }
     };
@@ -120,10 +128,22 @@ fn main() {
     // --- Tokenizing ---
     let start = Instant::now();
     let mut tokenizer = Tokenizer::new(&code);
-    tokenizer.tokenize();
+    let tokens = tokenizer.tokenize();
     let token_time = start.elapsed();
     if show_msgs {
         println!("├── Tokenizing... took {}", format_duration(token_time));
+        
+        // Print all tokens for debugging
+        println!("├── TOKEN DEBUG:");
+        for (i, token) in tokens.iter().enumerate() {
+            let lexeme = unsafe { std::str::from_utf8_unchecked(&code.as_bytes()[token.start..token.end]) };
+            println!("    ├── Token {}: Kind={:?}, Lexeme=\"{}\"", i, token.kind, lexeme);
+            
+            // Specific debugging for DoubleDot tokens
+            if token.kind == TokenKind::DoubleDot {
+                println!("    ├── FOUND DOUBLE DOT at position {}", i);
+            }
+        }
     }
 
     // --- Parsing AST ---
@@ -133,17 +153,22 @@ fn main() {
     if show_msgs {
         println!("├── Parsing AST... took {}", format_duration(parse_time));
     }
+    ast.debug();
     if !errors.is_empty() {
         print_errors(&errors);
         exit(1);
     }
+    ast.debug();
 
     // --- Optimizing AST (pass1) ---
     let start = Instant::now();
     optimize_pass1(&mut ast);
     let opt1_time = start.elapsed();
     if show_msgs {
-        println!("├── Optimizing AST (pass1)... took {}", format_duration(opt1_time));
+        println!(
+            "├── Optimizing AST (pass1)... took {}",
+            format_duration(opt1_time)
+        );
     }
 
     // --- Optimizing AST (pass2) ---
@@ -151,7 +176,10 @@ fn main() {
     let ast = pass2(ast);
     let opt2_time = start.elapsed();
     if show_msgs {
-        println!("├── Optimizing AST (pass2)... took {}", format_duration(opt2_time));
+        println!(
+            "├── Optimizing AST (pass2)... took {}",
+            format_duration(opt2_time)
+        );
     }
 
     // --- Transpiling ---
@@ -166,10 +194,13 @@ fn main() {
         match fs::write(&output_path, rust_code) {
             Ok(_) => {
                 if show_msgs {
-                    println!("└── Transpiling to Rust... took {}", format_duration(transp_time));
+                    println!(
+                        "└── Transpiling to Rust... took {}",
+                        format_duration(transp_time)
+                    );
                 }
                 println!("Successfully transpiled to Rust: {}", output_path.display());
-            },
+            }
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);
@@ -183,10 +214,13 @@ fn main() {
         match fs::write(&output_path, c_code) {
             Ok(_) => {
                 if show_msgs {
-                    println!("└── Transpiling to C... took {}", format_duration(transp_time));
+                    println!(
+                        "└── Transpiling to C... took {}",
+                        format_duration(transp_time)
+                    );
                 }
                 println!("Successfully transpiled to C: {}", output_path.display());
-            },
+            }
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);
@@ -200,10 +234,16 @@ fn main() {
         match fs::write(&output_path, llvm_code) {
             Ok(_) => {
                 if show_msgs {
-                    println!("└── Transpiling to LLVM_IR... took {}", format_duration(transp_time));
+                    println!(
+                        "└── Transpiling to LLVM_IR... took {}",
+                        format_duration(transp_time)
+                    );
                 }
-                println!("Successfully transpiled to LLVM_IR: {}", output_path.display());
-            },
+                println!(
+                    "Successfully transpiled to LLVM_IR: {}",
+                    output_path.display()
+                );
+            }
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);
@@ -217,10 +257,16 @@ fn main() {
         match fs::write(&output_path, asm_code) {
             Ok(_) => {
                 if show_msgs {
-                    println!("└── Transpiling to x86_64 Assembly... took {}", format_duration(transp_time));
+                    println!(
+                        "└── Transpiling to x86_64 Assembly... took {}",
+                        format_duration(transp_time)
+                    );
                 }
-                println!("Successfully transpiled to x86_64 Assembly: {}", output_path.display());
-            },
+                println!(
+                    "Successfully transpiled to x86_64 Assembly: {}",
+                    output_path.display()
+                );
+            }
             Err(e) => {
                 eprintln!("Error writing to file {}: {}", output_path.display(), e);
                 exit(1);

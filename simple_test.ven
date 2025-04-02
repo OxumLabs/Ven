@@ -1,0 +1,4 @@
+; Simple test for string interpolation
+
+@ name str "Alice"
+>> "Hello, {name}!" 
